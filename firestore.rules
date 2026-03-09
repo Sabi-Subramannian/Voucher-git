@@ -1,0 +1,79 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: username
+    // Fields:
+    //   - username: string (required)
+    //   - password: string (required)
+    //   - role: string (required, enum: ['admin', 'user'])
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: codes
+    // ... (same as before)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && (
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+        (request.auth.token.email == "sabin307@gmail.com" && request.auth.token.email_verified == true)
+      );
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['username', 'password', 'role', 'createdAt']) &&
+             data.username is string &&
+             data.password is string &&
+             data.role in ['admin', 'user'] &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidCode(data) {
+      return data.keys().hasAll(['code', 'maxUses', 'currentUses', 'expiresAt', 'createdAt', 'createdBy']) &&
+             data.code is string && data.code.size() == 5 &&
+             data.maxUses is int &&
+             data.currentUses is int &&
+             data.expiresAt is timestamp &&
+             data.createdAt is timestamp &&
+             data.createdBy is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{username} {
+      // Allow reading for login verification (only if they know the username)
+      allow get: if true; 
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidUser(request.resource.data);
+      allow update: if isAdmin() && isValidUser(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /codes/{codeId} {
+      allow read: if true; // Allow anyone to check a code
+      allow create: if isAdmin() && isValidCode(request.resource.data);
+      allow update: if (isAdmin() && isValidCode(request.resource.data)) || 
+                    (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentUses']) &&
+                     request.resource.data.currentUses == resource.data.currentUses + 1 &&
+                     (resource.data.maxUses == -1 || resource.data.currentUses < resource.data.maxUses) &&
+                     resource.data.expiresAt > request.time);
+      allow delete: if isAdmin();
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Represents a user in the system with roles.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "username": { "type": "string" },
+        "password": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["username", "password", "role"]
+    },
+    "Code": {
+      "title": "Code",
+      "description": "A unique 5-digit code with validation rules.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "description": "The 5-digit code string." },
+        "maxUses": { "type": "integer", "description": "Maximum number of times this code can be used. -1 for unlimited." },
+        "currentUses": { "type": "integer", "description": "Current number of times this code has been validated." },
+        "expiresAt": { "type": "string", "format": "date-time", "description": "Expiration timestamp." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string", "description": "UID of the admin who created the code." }
+      },
+      "required": ["code", "maxUses", "currentUses", "expiresAt", "createdAt", "createdBy"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles and roles."
+    },
+    "/codes/{codeId}": {
+      "schema": "Code",
+      "description": "Generated validation codes."
+    }
+  }
+}

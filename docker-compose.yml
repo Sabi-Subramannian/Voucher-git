@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - vouchers_data:/app/data
+    environment:
+      - NODE_ENV=production
+      - DB_PATH=/app/data/vouchers.db
+    restart: unless-stopped
+
+volumes:
+  vouchers_data:

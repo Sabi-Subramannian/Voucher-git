@@ -1,0 +1,5 @@
+{
+  "name": "VoucherPro",
+  "description": "A comprehensive voucher validation and dashboard system for restaurant chains, featuring RBAC, location-based tracking, and real-time analytics.",
+  "requestFramePermissions": []
+}
