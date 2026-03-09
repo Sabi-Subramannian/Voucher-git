@@ -152,7 +152,7 @@ app.delete('/api/admin/users/:id', (req, res) => {
 app.get('/api/user/stats/:id', (req, res) => {
   const { id } = req.params;
   const total = db.prepare('SELECT COUNT(*) as count FROM validation_logs WHERE user_id = ?').get(id) as any;
-  const today = db.prepare("SELECT COUNT(*) as count FROM validation_logs WHERE user_id = ? AND date(validated_at) = date('now')").get(id) as any;
+  const today = db.prepare("SELECT COUNT(*) as count FROM validation_logs WHERE user_id = ? AND date(validated_at, '+4 hours') = date('now', '+4 hours')").get(id) as any;
   
   res.json({
     total: total.count,
@@ -246,10 +246,10 @@ app.post('/api/admin/vouchers/generate', (req, res) => {
 
 app.get('/api/admin/reports/usage', (req, res) => {
   const usageByDate = db.prepare(`
-    SELECT date(validated_at) as date, COUNT(*) as count 
+    SELECT date(validated_at, '+4 hours') as date, COUNT(*) as count 
     FROM validation_logs 
-    GROUP BY date(validated_at) 
-    ORDER BY date(validated_at) ASC
+    GROUP BY date(validated_at, '+4 hours') 
+    ORDER BY date(validated_at, '+4 hours') ASC
   `).all();
   
   const usageByLocation = db.prepare(`
