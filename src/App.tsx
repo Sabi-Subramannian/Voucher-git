@@ -30,6 +30,19 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+function formatDubaiTime(dateString: string) {
+  // SQLite returns 'YYYY-MM-DD HH:MM:SS' (UTC). Ensure it's parsed as UTC.
+  const safeDateString = dateString.includes('T') ? dateString : dateString.replace(' ', 'T') + 'Z';
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Dubai',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).format(new Date(safeDateString));
+}
+
 // --- Types ---
 interface User {
   id: number;
@@ -447,7 +460,7 @@ function AdminDashboard() {
                             <td className="px-6 py-4 font-mono font-bold text-indigo-600">{act.code}</td>
                             <td className="px-6 py-4 text-sm text-slate-600">{act.location}</td>
                             <td className="px-6 py-4 text-sm text-slate-600">{act.username}</td>
-                            <td className="px-6 py-4 text-xs text-slate-400">{format(new Date(act.validated_at), 'MMM d, HH:mm')}</td>
+                            <td className="px-6 py-4 text-xs text-slate-400">{formatDubaiTime(act.validated_at)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -895,7 +908,7 @@ function StaffDashboard({ user }: { user: User }) {
               {history.map((h, i) => (
                 <tr key={i} className="hover:bg-slate-50 transition-colors">
                   <td className="px-6 py-4 font-mono font-bold text-indigo-600">{h.code}</td>
-                  <td className="px-6 py-4 text-xs text-slate-400">{format(new Date(h.validated_at), 'MMM d, HH:mm')}</td>
+                  <td className="px-6 py-4 text-xs text-slate-400">{formatDubaiTime(h.validated_at)}</td>
                 </tr>
               ))}
               {history.length === 0 && (
