@@ -24,12 +24,19 @@ db.exec(`
     name TEXT UNIQUE NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
     password TEXT NOT NULL,
     role TEXT NOT NULL,
     location_id INTEGER,
+    permissions TEXT, -- JSON array of strings
     FOREIGN KEY (location_id) REFERENCES locations (id)
   );
 
@@ -38,9 +45,12 @@ db.exec(`
     code TEXT UNIQUE NOT NULL,
     is_used BOOLEAN DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    starts_at DATETIME,
     expires_at DATETIME,
     max_uses INTEGER DEFAULT 1,
-    current_uses INTEGER DEFAULT 0
+    current_uses INTEGER DEFAULT 0,
+    batch_id INTEGER,
+    FOREIGN KEY (batch_id) REFERENCES batches (id)
   );
 
   CREATE TABLE IF NOT EXISTS validation_logs (
@@ -55,15 +65,27 @@ db.exec(`
   );
 `);
 
-// Migration: Add max_uses and current_uses if they don't exist
+// Ensure starts_at column exists for existing databases
 try {
-  const tableInfo = db.prepare('PRAGMA table_info(vouchers)').all() as any[];
-  const hasMaxUses = tableInfo.some(col => col.name === 'max_uses');
-  if (!hasMaxUses) {
-    console.log('Migrating vouchers table...');
-    db.prepare('ALTER TABLE vouchers ADD COLUMN max_uses INTEGER DEFAULT 1').run();
-    db.prepare('ALTER TABLE vouchers ADD COLUMN current_uses INTEGER DEFAULT 0').run();
-    db.prepare('UPDATE vouchers SET current_uses = 1 WHERE is_used = 1').run();
+  db.prepare('ALTER TABLE vouchers ADD COLUMN starts_at DATETIME').run();
+} catch (e) {
+  // Column likely already exists
+}
+
+// Migration: Add permissions to users, batch_id to vouchers
+try {
+  const userTableInfo = db.prepare('PRAGMA table_info(users)').all() as any[];
+  if (!userTableInfo.some(col => col.name === 'permissions')) {
+    db.prepare('ALTER TABLE users ADD COLUMN permissions TEXT').run();
+    // Default admin gets all permissions
+    db.prepare("UPDATE users SET permissions = '[\"dashboard\", \"create_voucher\", \"manage_users\", \"manage_locations\", \"reports\", \"redeem\"]' WHERE role = 'admin'").run();
+    // Default staff gets redeem only
+    db.prepare("UPDATE users SET permissions = '[\"redeem\"]' WHERE role = 'staff'").run();
+  }
+
+  const voucherTableInfo = db.prepare('PRAGMA table_info(vouchers)').all() as any[];
+  if (!voucherTableInfo.some(col => col.name === 'batch_id')) {
+    db.prepare('ALTER TABLE vouchers ADD COLUMN batch_id INTEGER').run();
   }
 } catch (e) {
   console.error('Migration failed:', e);
@@ -74,7 +96,8 @@ const seed = () => {
   const adminExists = db.prepare('SELECT * FROM users WHERE username = ?').get('admin');
   if (!adminExists) {
     const hashedPw = bcrypt.hashSync('admin123', 10);
-    db.prepare('INSERT INTO users (username, password, role) VALUES (?, ?, ?)').run('admin', hashedPw, 'admin');
+    const perms = JSON.stringify(["dashboard", "create_voucher", "manage_users", "manage_locations", "reports", "redeem"]);
+    db.prepare('INSERT INTO users (username, password, role, permissions) VALUES (?, ?, ?, ?)').run('admin', hashedPw, 'admin', perms);
   }
 
   const locations = ['Branch A', 'Branch B', 'Branch C'];
@@ -96,6 +119,12 @@ app.post('/api/login', (req, res) => {
   
   if (user && bcrypt.compareSync(password, user.password)) {
     const { password, ...userWithoutPassword } = user;
+    if (userWithoutPassword.permissions) {
+      userWithoutPassword.permissions = JSON.parse(userWithoutPassword.permissions);
+    } else {
+      userWithoutPassword.permissions = userWithoutPassword.role === 'admin' ? 
+        ["dashboard", "create_voucher", "manage_users", "manage_locations", "reports", "redeem"] : ["redeem"];
+    }
     res.json({ user: userWithoutPassword });
   } else {
     res.status(401).json({ error: 'Invalid credentials' });
@@ -104,15 +133,19 @@ app.post('/api/login', (req, res) => {
 
 // Admin: Manage Users
 app.get('/api/admin/users', (req, res) => {
-  const users = db.prepare("SELECT u.id, u.username, u.role, u.location_id, l.name as location_name FROM users u LEFT JOIN locations l ON u.location_id = l.id").all();
+  const users = db.prepare("SELECT u.id, u.username, u.role, u.location_id, u.permissions, l.name as location_name FROM users u LEFT JOIN locations l ON u.location_id = l.id").all() as any[];
+  users.forEach(u => {
+    if (u.permissions) u.permissions = JSON.parse(u.permissions);
+  });
   res.json(users);
 });
 
 app.post('/api/admin/users', (req, res) => {
-  const { username, password, location_id } = req.body;
+  const { username, password, location_id, role, permissions } = req.body;
   const hashedPw = bcrypt.hashSync(password, 10);
+  const permsJson = JSON.stringify(permissions || (role === 'admin' ? ["dashboard", "create_voucher", "manage_users", "manage_locations", "reports", "redeem"] : ["redeem"]));
   try {
-    db.prepare("INSERT INTO users (username, password, role, location_id) VALUES (?, ?, 'user', ?)").run(username, hashedPw, location_id);
+    db.prepare("INSERT INTO users (username, password, role, location_id, permissions) VALUES (?, ?, ?, ?, ?)").run(username, hashedPw, role || 'user', location_id, permsJson);
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: 'Username already exists' });
@@ -121,9 +154,14 @@ app.post('/api/admin/users', (req, res) => {
 
 app.put('/api/admin/users/:id', (req, res) => {
   const { id } = req.params;
-  const { role } = req.body;
+  const { username, role, permissions, password, location_id } = req.body;
   try {
-    db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, id);
+    if (password) {
+      const hashedPw = bcrypt.hashSync(password, 10);
+      db.prepare('UPDATE users SET username = ?, password = ?, role = ?, permissions = ?, location_id = ? WHERE id = ?').run(username, hashedPw, role, JSON.stringify(permissions), location_id, id);
+    } else {
+      db.prepare('UPDATE users SET username = ?, role = ?, permissions = ?, location_id = ? WHERE id = ?').run(username, role, JSON.stringify(permissions), location_id, id);
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update user' });
@@ -200,9 +238,56 @@ app.put('/api/admin/locations/:id', (req, res) => {
   }
 });
 
+// Admin: Batches
+app.get('/api/admin/batches', (req, res) => {
+  const batches = db.prepare(`
+    SELECT b.*, COUNT(v.id) as voucher_count 
+    FROM batches b 
+    LEFT JOIN vouchers v ON b.id = v.batch_id 
+    GROUP BY b.id 
+    ORDER BY b.created_at DESC
+  `).all();
+  res.json(batches);
+});
+
+app.post('/api/admin/batches', (req, res) => {
+  const { name } = req.body;
+  try {
+    const result = db.prepare('INSERT INTO batches (name) VALUES (?)').run(name);
+    res.json({ success: true, id: result.lastInsertRowid });
+  } catch (err) {
+    res.status(400).json({ error: 'Failed to create batch' });
+  }
+});
+
+app.put('/api/admin/batches/:id', (req, res) => {
+  const { id } = req.params;
+  const { name } = req.body;
+  try {
+    db.prepare('UPDATE batches SET name = ? WHERE id = ?').run(name, id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: 'Failed to update batch' });
+  }
+});
+
+app.delete('/api/admin/batches/:id', (req, res) => {
+  const { id } = req.params;
+  try {
+    const transaction = db.transaction(() => {
+      db.prepare('DELETE FROM vouchers WHERE batch_id = ?').run(id);
+      db.prepare('DELETE FROM batches WHERE id = ?').run(id);
+    });
+    transaction();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete batch' });
+  }
+});
+
 // Admin: Vouchers
 app.post('/api/admin/vouchers/generate', (req, res) => {
-  let { count, length, isNumeric, expiresAt, maxUses } = req.body;
+  let { count, length, isNumeric, startsAt, expiresAt, maxUses, batchId, batchName } = req.body;
   count = parseInt(count);
   length = parseInt(length) || 8;
   maxUses = parseInt(maxUses) || 1;
@@ -210,7 +295,14 @@ app.post('/api/admin/vouchers/generate', (req, res) => {
   if (isNaN(count) || count <= 0) {
     return res.status(400).json({ error: 'Invalid count' });
   }
-  const insert = db.prepare('INSERT INTO vouchers (code, expires_at, max_uses) VALUES (?, ?, ?)');
+
+  let finalBatchId = batchId;
+  if (batchName && !finalBatchId) {
+    const result = db.prepare('INSERT INTO batches (name) VALUES (?)').run(batchName);
+    finalBatchId = result.lastInsertRowid;
+  }
+
+  const insert = db.prepare('INSERT INTO vouchers (code, starts_at, expires_at, max_uses, batch_id) VALUES (?, ?, ?, ?, ?)');
   
   const generateCode = () => {
     const chars = isNumeric ? '0123456789' : 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -221,6 +313,7 @@ app.post('/api/admin/vouchers/generate', (req, res) => {
     return result;
   };
 
+  const startsAtStr = startsAt ? new Date(startsAt).toISOString() : new Date().toISOString();
   let expiresAtStr: string;
   if (expiresAt) {
     expiresAtStr = new Date(expiresAt).toISOString();
@@ -234,14 +327,19 @@ app.post('/api/admin/vouchers/generate', (req, res) => {
   for (let i = 0; i < count; i++) {
     try {
       const code = generateCode();
-      insert.run(code, expiresAtStr, maxUses);
+      insert.run(code, startsAtStr, expiresAtStr, maxUses, finalBatchId);
       generated++;
-      console.log(`Generated voucher: ${code}`);
     } catch (e) {
       i--; // Retry on duplicate
     }
   }
-  res.json({ success: true, count: generated });
+  res.json({ success: true, count: generated, batchId: finalBatchId });
+});
+
+app.get('/api/admin/vouchers/batch/:id', (req, res) => {
+  const { id } = req.params;
+  const vouchers = db.prepare('SELECT * FROM vouchers WHERE batch_id = ? ORDER BY created_at DESC').all(id);
+  res.json(vouchers);
 });
 
 app.get('/api/admin/reports/usage', (req, res) => {
@@ -263,12 +361,13 @@ app.get('/api/admin/reports/usage', (req, res) => {
 });
 
 app.get('/api/admin/vouchers/export', (req, res) => {
-  const vouchers = db.prepare('SELECT code, created_at, expires_at, is_used, max_uses, current_uses FROM vouchers ORDER BY created_at DESC').all() as any[];
+  const vouchers = db.prepare('SELECT code, created_at, starts_at, expires_at, is_used, max_uses, current_uses FROM vouchers ORDER BY created_at DESC').all() as any[];
   
-  const headers = ['Code', 'Created At', 'Expires At', 'Is Fully Used', 'Uses'];
+  const headers = ['Code', 'Created At', 'Valid From', 'Expires At', 'Is Fully Used', 'Uses'];
   const rows = vouchers.map(v => [
     v.code,
     v.created_at,
+    v.starts_at,
     v.expires_at,
     (v.is_used || v.current_uses >= v.max_uses) ? 'Yes' : 'No',
     `${v.current_uses}/${v.max_uses}`
@@ -285,35 +384,113 @@ app.get('/api/admin/vouchers/export', (req, res) => {
 });
 
 app.get('/api/admin/dashboard', (req, res) => {
-  const totalValidated = db.prepare('SELECT COUNT(*) as count FROM validation_logs').get() as any;
+  const { startDate, endDate, batchId, locationId, search } = req.query;
+  
+  let whereClause = 'WHERE 1=1';
+  const params: any[] = [];
+
+  if (startDate) {
+    whereClause += ' AND vl.validated_at >= ?';
+    params.push(new Date(startDate as string).toISOString());
+  }
+  if (endDate) {
+    whereClause += ' AND vl.validated_at <= ?';
+    params.push(new Date(endDate as string).toISOString());
+  }
+  if (batchId) {
+    whereClause += ' AND v.batch_id = ?';
+    params.push(batchId);
+  }
+  if (locationId) {
+    whereClause += ' AND vl.location_id = ?';
+    params.push(locationId);
+  }
+  if (search) {
+    whereClause += ' AND v.code LIKE ?';
+    params.push(`%${search}%`);
+  }
+
+  // Statistics
+  const totalValidated = db.prepare(`
+    SELECT COUNT(*) as count 
+    FROM validation_logs vl
+    JOIN vouchers v ON vl.voucher_id = v.id
+    ${whereClause}
+  `).get(...params) as any;
+
   const totalVouchers = db.prepare('SELECT COUNT(*) as count FROM vouchers').get() as any;
+
   const validationsByLoc = db.prepare(`
-    SELECT l.name, COUNT(vl.id) as count 
+    SELECT l.name, COUNT(filtered_vl.id) as count 
     FROM locations l 
-    LEFT JOIN validation_logs vl ON l.id = vl.location_id 
+    LEFT JOIN (
+      SELECT vl.location_id, vl.id
+      FROM validation_logs vl
+      JOIN vouchers v ON vl.voucher_id = v.id
+      ${whereClause}
+    ) filtered_vl ON l.id = filtered_vl.location_id
     GROUP BY l.id
-  `).all();
+  `).all(...params);
+
   const recentActivity = db.prepare(`
     SELECT v.code, l.name as location, u.username, vl.validated_at 
     FROM validation_logs vl
     JOIN vouchers v ON vl.voucher_id = v.id
     JOIN locations l ON vl.location_id = l.id
     JOIN users u ON vl.user_id = u.id
-    ORDER BY vl.validated_at DESC LIMIT 10
-  `).all();
+    ${whereClause}
+    ORDER BY vl.validated_at DESC LIMIT 20
+  `).all(...params);
+
+  // Latest Vouchers (filtered by batch and search if provided)
+  let voucherWhere = 'WHERE 1=1';
+  const vParams: any[] = [];
+  if (batchId) {
+    voucherWhere += ' AND v.batch_id = ?';
+    vParams.push(batchId);
+  }
+  if (search) {
+    voucherWhere += ' AND v.code LIKE ?';
+    vParams.push(`%${search}%`);
+  }
 
   const latestVouchers = db.prepare(`
-    SELECT code, created_at, is_used 
-    FROM vouchers 
-    ORDER BY created_at DESC LIMIT 10
-  `).all();
+    SELECT v.code, v.created_at, v.is_used, v.starts_at, v.expires_at, b.name as batch_name
+    FROM vouchers v
+    LEFT JOIN batches b ON v.batch_id = b.id
+    ${voucherWhere}
+    ORDER BY v.created_at DESC LIMIT 15
+  `).all(...vParams);
+
+  // Extra Analytics: Daily Trend (Last 7 days)
+  const dailyTrend = db.prepare(`
+    SELECT date(vl.validated_at, '+4 hours') as date, COUNT(*) as count
+    FROM validation_logs vl
+    JOIN vouchers v ON vl.voucher_id = v.id
+    ${whereClause}
+    GROUP BY date
+    ORDER BY date DESC LIMIT 7
+  `).all(...params);
+
+  // Extra Analytics: Top Batches
+  const topBatches = db.prepare(`
+    SELECT b.name, COUNT(vl.id) as count
+    FROM batches b
+    JOIN vouchers v ON b.id = v.batch_id
+    JOIN validation_logs vl ON v.id = vl.voucher_id
+    ${whereClause}
+    GROUP BY b.id
+    ORDER BY count DESC LIMIT 5
+  `).all(...params);
 
   res.json({
     totalValidated: totalValidated.count,
     totalVouchers: totalVouchers.count,
     validationsByLoc,
     recentActivity,
-    latestVouchers
+    latestVouchers,
+    dailyTrend,
+    topBatches
   });
 });
 
@@ -332,7 +509,10 @@ app.post('/api/validate', (req, res) => {
   }
 
   const now = new Date();
-  if (new Date(voucher.expires_at) < now) {
+  if (voucher.starts_at && new Date(voucher.starts_at) > now) {
+    return res.status(400).json({ error: 'Voucher is not yet valid' });
+  }
+  if (voucher.expires_at && new Date(voucher.expires_at) < now) {
     return res.status(400).json({ error: 'Voucher expired' });
   }
 
