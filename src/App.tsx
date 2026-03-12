@@ -50,6 +50,14 @@ interface User {
   role: 'admin' | 'user';
   location_id: number | null;
   location_name?: string;
+  permissions: string[];
+}
+
+interface Batch {
+  id: number;
+  name: string;
+  created_at: string;
+  voucher_count: number;
 }
 
 interface Location {
@@ -71,7 +79,12 @@ interface DashboardData {
     code: string;
     created_at: string;
     is_used: number;
+    batch_name?: string;
+    starts_at?: string;
+    expires_at?: string;
   }[];
+  dailyTrend: { date: string; count: number }[];
+  topBatches: { name: string; count: number }[];
 }
 
 interface ReportData {
@@ -173,7 +186,7 @@ export default function App() {
             <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
               <Ticket className="text-white w-4 h-4" />
             </div>
-            <span className="font-bold text-lg tracking-tight">VoucherPro</span>
+            <span className="font-bold text-lg tracking-tight">Firehouse Sub Voucher</span>
             <span className={cn(
               "text-[10px] uppercase font-bold px-2 py-0.5 rounded-full",
               user.role === 'admin' ? "bg-amber-100 text-amber-700" : "bg-blue-100 text-blue-700"
@@ -214,7 +227,7 @@ function LoginScreen({ onLogin, loading, error }: { onLogin: (u: string, p: stri
           <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-indigo-200">
             <Ticket className="text-white w-8 h-8" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900">VoucherPro</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Firehouse Sub Voucher</h1>
           <p className="text-slate-500 text-sm">Sign in to manage vouchers</p>
         </div>
 
@@ -238,9 +251,7 @@ function LoginScreen({ onLogin, loading, error }: { onLogin: (u: string, p: stri
           </Button>
         </form>
         
-        <div className="pt-4 text-center">
-          <p className="text-[10px] text-slate-400">Default Admin: admin / admin123</p>
-        </div>
+        {/* Default credentials removed */}
       </Card>
     </div>
   );
@@ -249,10 +260,11 @@ function LoginScreen({ onLogin, loading, error }: { onLogin: (u: string, p: stri
 // --- Admin Dashboard ---
 
 function AdminDashboard() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'users' | 'locations' | 'reports'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'users' | 'locations' | 'reports' | 'batches'>('dashboard');
   const [data, setData] = useState<DashboardData | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
+  const [batches, setBatches] = useState<Batch[]>([]);
   const [reportData, setReportData] = useState<ReportData | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -260,31 +272,65 @@ function AdminDashboard() {
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newLocationId, setNewLocationId] = useState('');
+  const [newUserRole, setNewUserRole] = useState<'admin' | 'user'>('user');
+  const [newUserPermissions, setNewUserPermissions] = useState<string[]>(['redeem']);
+
+  // User Editing
+  const [editingUserId, setEditingUserId] = useState<number | null>(null);
+  const [editingUsername, setEditingUsername] = useState('');
+  const [editingPassword, setEditingPassword] = useState('');
+  const [editingUserLocationId, setEditingUserLocationId] = useState('');
+  const [editingUserRole, setEditingUserRole] = useState<'admin' | 'user'>('user');
+  const [editingUserPermissions, setEditingUserPermissions] = useState<string[]>([]);
 
   // Location Management
   const [newLocationName, setNewLocationName] = useState('');
   const [editingLocationId, setEditingLocationId] = useState<number | null>(null);
   const [editingLocationName, setEditingLocationName] = useState('');
 
+  // Batch Management
+  const [newBatchName, setNewBatchName] = useState('');
+  const [selectedBatchId, setSelectedBatchId] = useState<string>('');
+  const [batchVouchers, setBatchVouchers] = useState<any[]>([]);
+  const [viewingBatchId, setViewingBatchId] = useState<number | null>(null);
+
   // Custom Generation
   const [genCount, setGenCount] = useState('10');
   const [genLength, setGenLength] = useState('8');
   const [genIsNumeric, setGenIsNumeric] = useState(false);
+  const [genStartsAt, setGenStartsAt] = useState('');
   const [genExpiresAt, setGenExpiresAt] = useState('');
   const [genMaxUses, setGenMaxUses] = useState('1');
+  const [genBatchName, setGenBatchName] = useState('');
+
+  // Dashboard Filters
+  const [filterStartDate, setFilterStartDate] = useState('');
+  const [filterEndDate, setFilterEndDate] = useState('');
+  const [filterBatchId, setFilterBatchId] = useState('');
+  const [filterLocationId, setFilterLocationId] = useState('');
+  const [filterSearch, setFilterSearch] = useState('');
 
   const fetchData = async () => {
     try {
-      const [dashRes, usersRes, locsRes, reportsRes] = await Promise.all([
-        fetch('/api/admin/dashboard'),
+      const params = new URLSearchParams();
+      if (filterStartDate) params.append('startDate', filterStartDate);
+      if (filterEndDate) params.append('endDate', filterEndDate);
+      if (filterBatchId) params.append('batchId', filterBatchId);
+      if (filterLocationId) params.append('locationId', filterLocationId);
+      if (filterSearch) params.append('search', filterSearch);
+
+      const [dashRes, usersRes, locsRes, reportsRes, batchesRes] = await Promise.all([
+        fetch(`/api/admin/dashboard?${params.toString()}`),
         fetch('/api/admin/users'),
         fetch('/api/locations'),
-        fetch('/api/admin/reports/usage')
+        fetch('/api/admin/reports/usage'),
+        fetch('/api/admin/batches')
       ]);
       setData(await dashRes.json());
       setUsers(await usersRes.json());
       setLocations(await locsRes.json());
       setReportData(await reportsRes.json());
+      setBatches(await batchesRes.json());
     } catch (err) {
       console.error(err);
     } finally {
@@ -294,16 +340,20 @@ function AdminDashboard() {
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [filterStartDate, filterEndDate, filterBatchId, filterLocationId, filterSearch]);
 
-  const handleGenerate = async (count: number, length: number = 8, isNumeric: boolean = false, expiresAt?: string, maxUses: number = 1) => {
+  const handleGenerate = async (count: number, length: number = 8, isNumeric: boolean = false, startsAt?: string, expiresAt?: string, maxUses: number = 1, batchId?: string, batchName?: string) => {
     try {
       await fetch('/api/admin/vouchers/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ count, length, isNumeric, expiresAt, maxUses }),
+        body: JSON.stringify({ count, length, isNumeric, startsAt, expiresAt, maxUses, batchId, batchName }),
       });
       alert(`Generated ${count} vouchers!`);
+      setGenBatchName('');
+      setSelectedBatchId('');
+      setGenStartsAt('');
+      setGenExpiresAt('');
       fetchData();
     } catch (err) {
       console.error(err);
@@ -320,17 +370,94 @@ function AdminDashboard() {
       const res = await fetch('/api/admin/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: newUsername, password: newPassword, location_id: newLocationId }),
+        body: JSON.stringify({ 
+          username: newUsername, 
+          password: newPassword, 
+          location_id: newLocationId,
+          role: newUserRole,
+          permissions: newUserPermissions
+        }),
       });
       if (res.ok) {
         setNewUsername('');
         setNewPassword('');
         setNewLocationId('');
+        setNewUserRole('user');
+        setNewUserPermissions(['redeem']);
         fetchData();
       } else {
         const d = await res.json();
         alert(d.error);
       }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleUpdateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingUserId) return;
+    try {
+      const res = await fetch(`/api/admin/users/${editingUserId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          username: editingUsername,
+          password: editingPassword,
+          location_id: editingUserLocationId,
+          role: editingUserRole,
+          permissions: editingUserPermissions
+        }),
+      });
+      if (res.ok) {
+        setEditingUserId(null);
+        setEditingUsername('');
+        setEditingPassword('');
+        setEditingUserLocationId('');
+        setEditingUserRole('user');
+        setEditingUserPermissions([]);
+        fetchData();
+      } else {
+        const d = await res.json();
+        alert(d.error);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleCreateBatch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const res = await fetch('/api/admin/batches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newBatchName }),
+      });
+      if (res.ok) {
+        setNewBatchName('');
+        fetchData();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleDeleteBatch = async (id: number) => {
+    if (!confirm('Are you sure? This will delete all vouchers in this batch.')) return;
+    try {
+      await fetch(`/api/admin/batches/${id}`, { method: 'DELETE' });
+      fetchData();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleViewBatch = async (id: number) => {
+    try {
+      const res = await fetch(`/api/admin/vouchers/batch/${id}`);
+      setBatchVouchers(await res.json());
+      setViewingBatchId(id);
     } catch (err) {
       console.error(err);
     }
@@ -418,6 +545,71 @@ function AdminDashboard() {
       case 'dashboard':
         return (
           <div className="space-y-8 animate-in fade-in duration-300">
+            {/* Filters Section */}
+            <Card className="p-4 bg-slate-50 border-slate-200">
+              <div className="flex flex-wrap items-end gap-4">
+                <div className="flex-1 min-w-[200px] space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Search Voucher</label>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <Input 
+                      className="pl-9" 
+                      placeholder="Enter code..." 
+                      value={filterSearch}
+                      onChange={e => setFilterSearch(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="w-48 space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Batch</label>
+                  <select 
+                    className="w-full h-10 px-3 py-2 bg-white border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={filterBatchId}
+                    onChange={e => setFilterBatchId(e.target.value)}
+                  >
+                    <option value="">All Batches</option>
+                    {batches.map(b => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="w-48 space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Branch</label>
+                  <select 
+                    className="w-full h-10 px-3 py-2 bg-white border border-slate-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={filterLocationId}
+                    onChange={e => setFilterLocationId(e.target.value)}
+                  >
+                    <option value="">All Branches</option>
+                    {locations.map(l => (
+                      <option key={l.id} value={l.id}>{l.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="w-40 space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">From</label>
+                  <Input type="date" value={filterStartDate} onChange={e => setFilterStartDate(e.target.value)} />
+                </div>
+                <div className="w-40 space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">To</label>
+                  <Input type="date" value={filterEndDate} onChange={e => setFilterEndDate(e.target.value)} />
+                </div>
+                <Button 
+                  variant="secondary" 
+                  onClick={() => {
+                    setFilterSearch('');
+                    setFilterBatchId('');
+                    setFilterLocationId('');
+                    setFilterStartDate('');
+                    setFilterEndDate('');
+                  }}
+                  className="h-10"
+                >
+                  Clear
+                </Button>
+              </div>
+            </Card>
+
             <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
               <Card className="p-6 bg-indigo-600 text-white border-none">
                 <p className="text-xs font-bold uppercase tracking-wider opacity-80">Total Validated</p>
@@ -438,7 +630,7 @@ function AdminDashboard() {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              <div className="lg:col-span-2">
+              <div className="lg:col-span-2 space-y-8">
                 <Card>
                   <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
                     <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400">Recent Activity</h2>
@@ -463,10 +655,64 @@ function AdminDashboard() {
                             <td className="px-6 py-4 text-xs text-slate-400">{formatDubaiTime(act.validated_at)}</td>
                           </tr>
                         ))}
+                        {data?.recentActivity.length === 0 && (
+                          <tr>
+                            <td colSpan={4} className="px-6 py-12 text-center text-slate-400 italic">No activity found with current filters</td>
+                          </tr>
+                        )}
                       </tbody>
                     </table>
                   </div>
                 </Card>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                  <Card className="p-6">
+                    <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-6">Daily Trend (Last 7 Days)</h2>
+                    <div className="h-[200px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={data?.dailyTrend.slice().reverse()}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                          <XAxis 
+                            dataKey="date" 
+                            axisLine={false} 
+                            tickLine={false} 
+                            tick={{ fontSize: 10, fill: '#94a3b8' }}
+                            tickFormatter={(val) => format(new Date(val), 'MMM d')}
+                          />
+                          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                          <Tooltip 
+                            contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                            labelStyle={{ fontWeight: 'bold', marginBottom: '4px' }}
+                          />
+                          <Bar dataKey="count" fill="#6366f1" radius={[4, 4, 0, 0]} barSize={30} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </Card>
+
+                  <Card className="p-6">
+                    <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-6">Top Batches by Usage</h2>
+                    <div className="space-y-4">
+                      {data?.topBatches.map((batch, i) => (
+                        <div key={i} className="space-y-1">
+                          <div className="flex justify-between text-xs">
+                            <span className="font-medium text-slate-700">{batch.name}</span>
+                            <span className="text-slate-400">{batch.count} used</span>
+                          </div>
+                          <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-indigo-500 rounded-full" 
+                              style={{ width: `${(batch.count / (data.topBatches[0]?.count || 1)) * 100}%` }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                      {data?.topBatches.length === 0 && (
+                        <p className="text-center py-8 text-slate-400 italic text-sm">No batch data available</p>
+                      )}
+                    </div>
+                  </Card>
+                </div>
               </div>
               <div className="lg:col-span-1 space-y-8">
                 <Card className="p-6 space-y-6">
@@ -481,9 +727,18 @@ function AdminDashboard() {
                       <Input type="number" value={genLength} onChange={e => setGenLength(e.target.value)} placeholder="8" />
                     </div>
                     <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Valid From (Optional)</label>
+                      <Input 
+                        type="datetime-local" 
+                        value={genStartsAt} 
+                        onChange={e => setGenStartsAt(e.target.value)} 
+                        className="w-full"
+                      />
+                    </div>
+                    <div className="space-y-1">
                       <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Expires At (Optional)</label>
                       <Input 
-                        type="date" 
+                        type="datetime-local" 
                         value={genExpiresAt} 
                         onChange={e => setGenExpiresAt(e.target.value)} 
                         className="w-full"
@@ -503,6 +758,30 @@ function AdminDashboard() {
                         <option value="10">10 Times</option>
                       </select>
                     </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Batch (Required)</label>
+                      <select 
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
+                        value={selectedBatchId}
+                        onChange={e => setSelectedBatchId(e.target.value)}
+                      >
+                        <option value="">Select Existing Batch</option>
+                        {batches.map(b => (
+                          <option key={b.id} value={b.id}>{b.name}</option>
+                        ))}
+                        <option value="new">+ Create New Batch</option>
+                      </select>
+                    </div>
+                    {selectedBatchId === 'new' && (
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">New Batch Name</label>
+                        <Input 
+                          value={genBatchName} 
+                          onChange={e => setGenBatchName(e.target.value)} 
+                          placeholder="Batch Name" 
+                        />
+                      </div>
+                    )}
                     <div className="flex items-center gap-2">
                       <input 
                         type="checkbox" 
@@ -514,9 +793,18 @@ function AdminDashboard() {
                       <label htmlFor="numeric" className="text-xs font-medium text-slate-600">Numbers Only</label>
                     </div>
                     <Button 
-                      onClick={() => handleGenerate(parseInt(genCount), parseInt(genLength), genIsNumeric, genExpiresAt, parseInt(genMaxUses))} 
+                      onClick={() => handleGenerate(
+                        parseInt(genCount), 
+                        parseInt(genLength), 
+                        genIsNumeric, 
+                        genStartsAt,
+                        genExpiresAt, 
+                        parseInt(genMaxUses),
+                        selectedBatchId === 'new' ? undefined : selectedBatchId,
+                        selectedBatchId === 'new' ? genBatchName : undefined
+                      )} 
                       className="w-full"
-                      disabled={!genCount || !genLength}
+                      disabled={!genCount || !genLength || (!selectedBatchId) || (selectedBatchId === 'new' && !genBatchName)}
                     >
                       <Plus className="w-4 h-4" /> Generate Vouchers
                     </Button>
@@ -533,7 +821,18 @@ function AdminDashboard() {
                   <div className="divide-y divide-slate-100">
                     {data?.latestVouchers.map((v, i) => (
                       <div key={i} className="px-6 py-3 flex items-center justify-between">
-                        <span className="font-mono font-bold text-slate-700">{v.code}</span>
+                        <div className="flex flex-col">
+                          <span className="font-mono font-bold text-slate-700">{v.code}</span>
+                          <div className="flex flex-col gap-0.5">
+                            <span className="text-[9px] text-slate-400 uppercase tracking-tight">{v.batch_name || 'No Batch'}</span>
+                            {(v.starts_at || v.expires_at) && (
+                              <span className="text-[8px] text-slate-300 font-medium">
+                                {v.starts_at && formatDubaiTime(v.starts_at)} 
+                                {v.expires_at && ` - ${formatDubaiTime(v.expires_at)}`}
+                              </span>
+                            )}
+                          </div>
+                        </div>
                         <span className={cn(
                           "text-[10px] font-bold px-2 py-0.5 rounded-full",
                           v.is_used ? "bg-slate-100 text-slate-400" : "bg-emerald-100 text-emerald-700"
@@ -549,27 +848,47 @@ function AdminDashboard() {
           </div>
         );
       case 'users':
+        const permissionOptions = [
+          { id: 'dashboard', label: 'Dashboard' },
+          { id: 'create_voucher', label: 'Create Voucher' },
+          { id: 'manage_users', label: 'Manage Users' },
+          { id: 'manage_locations', label: 'Manage Locations' },
+          { id: 'reports', label: 'Reports' },
+          { id: 'redeem', label: 'Redeem Only' },
+        ];
+
         return (
           <div className="space-y-8 animate-in fade-in duration-300">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               <div className="lg:col-span-1">
                 <Card className="p-6">
-                  <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-6">Create Staff Account</h2>
-                  <form onSubmit={handleCreateUser} className="space-y-4">
+                  <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-6">
+                    {editingUserId ? 'Edit Account' : 'Create Staff Account'}
+                  </h2>
+                  <form onSubmit={editingUserId ? handleUpdateUser : handleCreateUser} className="space-y-4">
                     <div className="space-y-1">
                       <label className="text-xs font-semibold text-slate-600">Username</label>
-                      <Input value={newUsername} onChange={e => setNewUsername(e.target.value)} required />
+                      <Input 
+                        value={editingUserId ? editingUsername : newUsername} 
+                        onChange={e => editingUserId ? setEditingUsername(e.target.value) : setNewUsername(e.target.value)} 
+                        required 
+                      />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs font-semibold text-slate-600">Password</label>
-                      <Input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} required />
+                      <label className="text-xs font-semibold text-slate-600">Password {editingUserId && '(Leave blank to keep current)'}</label>
+                      <Input 
+                        type="password" 
+                        value={editingUserId ? editingPassword : newPassword} 
+                        onChange={e => editingUserId ? setEditingPassword(e.target.value) : setNewPassword(e.target.value)} 
+                        required={!editingUserId} 
+                      />
                     </div>
                     <div className="space-y-1">
                       <label className="text-xs font-semibold text-slate-600">Location</label>
                       <select 
                         className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
-                        value={newLocationId}
-                        onChange={e => setNewLocationId(e.target.value)}
+                        value={editingUserId ? editingUserLocationId : newLocationId}
+                        onChange={e => editingUserId ? setEditingUserLocationId(e.target.value) : setNewLocationId(e.target.value)}
                         required
                       >
                         <option value="">Select Location</option>
@@ -578,7 +897,49 @@ function AdminDashboard() {
                         ))}
                       </select>
                     </div>
-                    <Button type="submit" className="w-full">Create Account</Button>
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-600">Role</label>
+                      <select 
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
+                        value={editingUserId ? editingUserRole : newUserRole}
+                        onChange={e => editingUserId ? setEditingUserRole(e.target.value as any) : setNewUserRole(e.target.value as any)}
+                        required
+                      >
+                        <option value="user">User</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <label className="text-xs font-semibold text-slate-600">Permissions</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {permissionOptions.map(opt => (
+                          <div key={opt.id} className="flex items-center gap-2">
+                            <input 
+                              type="checkbox" 
+                              id={`perm-${opt.id}`}
+                              checked={editingUserId ? editingUserPermissions.includes(opt.id) : newUserPermissions.includes(opt.id)}
+                              onChange={e => {
+                                const current = editingUserId ? editingUserPermissions : newUserPermissions;
+                                const updated = e.target.checked 
+                                  ? [...current, opt.id]
+                                  : current.filter(p => p !== opt.id);
+                                editingUserId ? setEditingUserPermissions(updated) : setNewUserPermissions(updated);
+                              }}
+                              className="w-4 h-4 text-indigo-600 border-slate-200 rounded focus:ring-indigo-500"
+                            />
+                            <label htmlFor={`perm-${opt.id}`} className="text-xs text-slate-600">{opt.label}</label>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <Button type="submit" className="flex-1">{editingUserId ? 'Update Account' : 'Create Account'}</Button>
+                      {editingUserId && (
+                        <Button variant="secondary" onClick={() => setEditingUserId(null)}>Cancel</Button>
+                      )}
+                    </div>
                   </form>
                 </Card>
               </div>
@@ -598,18 +959,26 @@ function AdminDashboard() {
                         {users.map(u => (
                           <tr key={u.id} className="hover:bg-slate-50 transition-colors">
                             <td className="px-6 py-4 font-medium text-slate-900">{u.username}</td>
-                            <td className="px-6 py-4 text-sm text-slate-600">{u.location_name}</td>
+                            <td className="px-6 py-4 text-sm text-slate-600">{u.location_name || 'Admin'}</td>
                             <td className="px-6 py-4">
-                              <select 
-                                value={u.role} 
-                                onChange={(e) => handleUpdateUserRole(u.id, e.target.value)}
-                                className="text-xs font-bold uppercase bg-transparent border-none focus:ring-0 cursor-pointer"
-                              >
-                                <option value="user">User</option>
-                                <option value="admin">Admin</option>
-                              </select>
+                              <span className={cn(
+                                "text-[10px] uppercase font-bold px-2 py-0.5 rounded-full",
+                                u.role === 'admin' ? "bg-amber-100 text-amber-700" : "bg-blue-100 text-blue-700"
+                              )}>
+                                {u.role}
+                              </span>
                             </td>
-                            <td className="px-6 py-4 text-right">
+                            <td className="px-6 py-4 text-right space-x-2">
+                              <Button variant="ghost" className="text-slate-400 hover:text-indigo-600" onClick={() => {
+                                setEditingUserId(u.id);
+                                setEditingUsername(u.username);
+                                setEditingUserLocationId(u.location_id?.toString() || '');
+                                setEditingUserRole(u.role);
+                                setEditingUserPermissions(u.permissions || []);
+                                setEditingPassword('');
+                              }}>
+                                <Edit2 className="w-4 h-4" />
+                              </Button>
                               <Button variant="ghost" className="text-red-600 hover:bg-red-50 hover:text-red-700" onClick={() => handleDeleteUser(u.id)}>
                                 <Trash2 className="w-4 h-4" />
                               </Button>
@@ -734,6 +1103,94 @@ function AdminDashboard() {
             </div>
           </div>
         );
+      case 'batches':
+        return (
+          <div className="space-y-8 animate-in fade-in duration-300">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              <div className="lg:col-span-1">
+                <Card className="p-6">
+                  <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-6">Create New Batch</h2>
+                  <form onSubmit={handleCreateBatch} className="space-y-4">
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-600">Batch Name</label>
+                      <Input 
+                        value={newBatchName} 
+                        onChange={e => setNewBatchName(e.target.value)} 
+                        placeholder="e.g. Summer Promo 2024"
+                        required 
+                      />
+                    </div>
+                    <Button type="submit" className="w-full">Create Batch</Button>
+                  </form>
+                </Card>
+              </div>
+              <div className="lg:col-span-2">
+                <Card>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="bg-slate-50 text-[10px] uppercase font-bold text-slate-500 tracking-widest">
+                          <th className="px-6 py-4">Batch Name</th>
+                          <th className="px-6 py-4">Created At</th>
+                          <th className="px-6 py-4">Vouchers</th>
+                          <th className="px-6 py-4 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {batches.map(b => (
+                          <tr key={b.id} className="hover:bg-slate-50 transition-colors">
+                            <td className="px-6 py-4 font-medium text-slate-900">{b.name}</td>
+                            <td className="px-6 py-4 text-xs text-slate-400">{formatDubaiTime(b.created_at)}</td>
+                            <td className="px-6 py-4 text-sm text-slate-600">{b.voucher_count}</td>
+                            <td className="px-6 py-4 text-right space-x-2">
+                              <Button variant="ghost" className="text-indigo-600" onClick={() => handleViewBatch(b.id)}>
+                                <Search className="w-4 h-4" />
+                              </Button>
+                              <Button variant="ghost" className="text-red-600 hover:bg-red-50 hover:text-red-700" onClick={() => handleDeleteBatch(b.id)}>
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </Card>
+              </div>
+            </div>
+
+            {viewingBatchId && (
+              <Card className="p-6 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400">
+                    Vouchers in Batch: {batches.find(b => b.id === viewingBatchId)?.name}
+                  </h2>
+                  <Button variant="ghost" size="sm" onClick={() => setViewingBatchId(null)}>Close</Button>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-4">
+                  {batchVouchers.map(v => (
+                    <div key={v.id} className="p-3 bg-slate-50 rounded-lg border border-slate-100 text-center space-y-1">
+                      <div className="font-mono font-bold text-indigo-600 text-sm">{v.code}</div>
+                      <div className="text-[10px] text-slate-400">
+                        Uses: {v.current_uses}/{v.max_uses}
+                      </div>
+                      {v.starts_at && (
+                        <div className="text-[9px] text-slate-500">
+                          From: {formatDubaiTime(v.starts_at)}
+                        </div>
+                      )}
+                      {v.expires_at && (
+                        <div className="text-[9px] text-slate-500">
+                          To: {formatDubaiTime(v.expires_at)}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+          </div>
+        );
     }
   };
 
@@ -763,6 +1220,12 @@ function AdminDashboard() {
           className={cn("pb-4 text-sm font-bold transition-all px-2", activeTab === 'reports' ? "border-b-2 border-indigo-600 text-indigo-600" : "text-slate-400")}
         >
           REPORTS
+        </button>
+        <button 
+          onClick={() => setActiveTab('batches')}
+          className={cn("pb-4 text-sm font-bold transition-all px-2", activeTab === 'batches' ? "border-b-2 border-indigo-600 text-indigo-600" : "text-slate-400")}
+        >
+          BATCHES
         </button>
       </div>
 
